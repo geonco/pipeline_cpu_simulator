@@ -71,15 +71,15 @@ int main (int argc, char *argv[]) {
 	fclose(f_dmem);
 
 	// processor model
-	uint32_t pc_curr, pc_next;	// program counter
+	uint32_t pc_curr = 0, pc_next;	// program counter
 	struct imem_input_t imem_in;
 	struct imem_output_t imem_out;
 
 	// pipeline registers
-	struct pipe_if_id_t id;
-	struct pipe_id_ex_t ex;
-	struct pipe_ex_mem_t mem;
-	struct pipe_mem_wb_t wb;
+	struct pipe_if_id_t id = {0};
+	struct pipe_id_ex_t ex = {0};
+	struct pipe_ex_mem_t mem = {0};
+	struct pipe_mem_wb_t wb = {0};
 
 	uint32_t cc = 2;	// clock count
 	while (cc < CLK_NUM) {
@@ -110,9 +110,100 @@ int main (int argc, char *argv[]) {
 		wb.rd = mem.rd;
 		wb.reg_write = mem.reg_write;
 		wb.mem_to_reg = mem.mem_to_reg;
-		
-		// execution stage
 
+		// execution stage
+		uint32_t alu_control;
+		if ((ex.alu_op >> 1) & 1) {
+			switch (ex.funct3) 
+			{
+				case 0x0: alu_control = (~ex.alu_src & ((ex.funct7 >> 5) & 1)) ? 0x6 : 0x2;	break;
+				case 0x1: alu_control = 0x4;	break;
+				case 0x2: alu_control = 0x8;	break;
+				case 0x3: alu_control = 0x9;	break;
+				case 0x4: alu_control = 0x3;	break;
+				case 0x5: alu_control = ((ex.funct7 >> 5) & 1) ? 0x7 : 0x5;	break;
+				case 0x6: alu_control = 0x1;	break;
+				case 0x7: alu_control = 0x0;	break;
+				default: alu_control = 0x2;		break;
+			}
+		}
+		else {
+			alu_control = (ex.alu_op & 1) ? 0x6 : 0x2;
+		}
+
+		uint32_t forward_a, forward_b, alu_fwd_in1, alu_fwd_in2;
+
+		// forward_a (rs1)
+        if (mem.reg_write && (mem.rd != 0) && (mem.rd == ex.rs1))
+            forward_a = 0x2;
+        else if (wb.reg_write && (wb.rd != 0) && (wb.rd == ex.rs1))
+            forward_a = 0x1;
+        else
+            forward_a = 0x0;
+
+        // forward_b (rs2)
+        if (mem.reg_write && (mem.rd != 0) && (mem.rd == ex.rs2))
+            forward_b = 0x2;
+        else if (wb.reg_write && (wb.rd != 0) && (wb.rd == ex.rs2))
+            forward_b = 0x1;
+        else
+            forward_b = 0x0;
+
+		alu_fwd_in1 = (forward_a == 0x2) ? mem.alu_result :
+					  (forward_a == 0x1) ? rd_din :
+					  ex.rs1_dout;
+
+		alu_fwd_in2 = (forward_b == 0x2) ? mem.alu_result :
+					  (forward_b == 0x1) ? rd_din :
+					  ex.rs2_dout;
+
+		uint32_t alu_in1, alu_in2, alu_result;
+		alu_in1 = (ex.auipc) ? ex.pc :
+                  (ex.lui) ? 0 :
+                  alu_fwd_in1;
+   		alu_in2 = (ex.alu_src) ? ex.imm32 : alu_fwd_in2;
+
+		switch (alu_control) {
+			case 0x0: alu_result = alu_in1 & alu_in2; break;
+			case 0x1: alu_result = alu_in1 | alu_in2; break;
+			case 0x2: alu_result = alu_in1 + alu_in2; break;
+			case 0x3: alu_result = alu_in1 ^ alu_in2; break;
+			case 0x4: alu_result = alu_in1 << (alu_in2 & 0x1f); break;
+			case 0x5: alu_result = alu_in1 >> (alu_in2 & 0x1f); break;
+			case 0x6: alu_result = alu_in1 - alu_in2; break;
+			case 0x7: alu_result = (uint32_t)((int32_t)alu_in1 >> (alu_in2 & 0x1f)); break;
+			case 0x8: alu_result = ((int32_t)alu_in1 < (int32_t)alu_in2) ? 1 : 0; break;
+			case 0x9: alu_result = (alu_in1 < alu_in2) ? 1 : 0; break;
+			default:  alu_result = 0; break;
+		}
+
+		// branch unit
+		uint32_t sub_for_branch, bu_zero, bu_sign, bu_sign_u, branch_taken;
+		sub_for_branch = alu_fwd_in1 - alu_fwd_in2;
+    	bu_zero = (sub_for_branch == 0);
+    	bu_sign = (sub_for_branch >> 31) & 1;
+    	bu_sign_u = (alu_fwd_in1 < alu_fwd_in2);
+    	branch_taken = ((ex.branch >> 0) & 1) & bu_zero              // beq
+                        | ((ex.branch >> 1) & 1) & ~bu_zero          // bne
+                        | ((ex.branch >> 2) & 1) & bu_sign           // blt
+                        | ((ex.branch >> 3) & 1) & ~bu_sign          // bge
+                        | ((ex.branch >> 4) & 1) & bu_sign_u         // bltu
+                        | ((ex.branch >> 5) & 1) & ~bu_sign_u;       // bgeu
+
+		uint32_t pc_next_sel, pc_target;
+		pc_next_sel = branch_taken | ex.jal | ex.jalr;
+		pc_target = (ex.jalr) ? ((alu_fwd_in1 + ex.imm32) & ~1u) :
+                    (ex.jal) ? (ex.pc + ex.imm32) :
+					ex.pc + (ex.imm32 << 1);
+
+        mem.alu_result = (ex.jal | ex.jalr) ? (ex.pc + 4) : alu_result;
+        mem.rs2_dout = alu_fwd_in2;
+        mem.funct3 = ex.funct3;
+        mem.mem_read = ex.mem_read;
+        mem.mem_write = ex.mem_write;
+        mem.rd = ex.rd;
+        mem.reg_write = ex.reg_write;
+        mem.mem_to_reg = ex.mem_to_reg;
 
 		// instruction decode stage
 
