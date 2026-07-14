@@ -85,11 +85,32 @@ int main (int argc, char *argv[]) {
 	while (cc < CLK_NUM) {
 
 		// write back stage
-
+		uint32_t rd_din;
+		rd_din = wb.mem_to_reg ? wb.dmem_dout : wb.alu_result;
+		if (wb.reg_write && wb.rd != 0) reg_data[wb.rd] = rd_din;
 
 		// memory stage
+		uint32_t dmem_addr = (mem.alu_result >> 2) & (DMEM_DEPTH - 1);
+		uint32_t dmem_dout = dmem_data[dmem_addr];
 
+		if (mem.mem_write) dmem_data[dmem_addr] = mem.rs2_dout;
 
+		uint32_t load_ext;
+		switch (mem.funct3)
+		{
+			case 0x0: load_ext = (int32_t)(int8_t)(dmem_dout & 0xff);   break;  // LB
+			case 0x1: load_ext = (int32_t)(int16_t)(dmem_dout & 0xffff); break; // LH
+			case 0x4: load_ext = dmem_dout & 0xff;    break;                    // LBU
+			case 0x5: load_ext = dmem_dout & 0xffff;  break;                    // LHU
+			default:  load_ext = dmem_dout;           break;                    // LW
+		}
+
+		wb.alu_result = mem.alu_result;
+		wb.dmem_dout = load_ext;
+		wb.rd = mem.rd;
+		wb.reg_write = mem.reg_write;
+		wb.mem_to_reg = mem.mem_to_reg;
+		
 		// execution stage
 
 
