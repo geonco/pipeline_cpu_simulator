@@ -8,14 +8,24 @@
 
 #include "rv32i.h"
 
+static void dump_state(FILE *fp, uint32_t *reg_data, uint32_t *dmem_data) {
+	int i;
+	for (i = 0; i < 32; i++) {
+		fprintf(fp, "RF[%02d]: %016lx\n", i, (unsigned long)reg_data[i]);
+	}
+	for (i = 0; i < 9; i++) {
+		fprintf(fp, "DMEM[%02d]: %016lx\n", i, (unsigned long)dmem_data[i]);
+	}
+}
+
 int main (int argc, char *argv[]) {
 
-	// get input arguments
 	FILE *f_imem, *f_dmem;
 	if (argc < 3) {
-		printf("usage: %s imem_data_file dmem_data_file\n", argv[0]);
+		printf("usage: %s imem_data_file dmem_data_file [report_file]\n", argv[0]);
 		exit(1);
 	}
+	const char *report_file = (argc >= 4) ? argv[3] : "report.txt";
 
 	if ( (f_imem = fopen(argv[1], "r")) == NULL ) {
 		printf("Cannot find %s\n", argv[1]);
@@ -69,6 +79,12 @@ int main (int argc, char *argv[]) {
 
 	fclose(f_imem);
 	fclose(f_dmem);
+
+	FILE *fp;
+	if ( (fp = fopen(report_file, "w")) == NULL ) {
+		printf("Cannot open %s\n", report_file);
+		exit(1);
+	}
 
 	// processor model
 	uint32_t pc_curr = 0, pc_next;	// program counter
@@ -340,11 +356,16 @@ int main (int argc, char *argv[]) {
 		if (pc_write) pc_curr = pc_next;
 
 		cc++;
+
+		if (cc == CLK_NUM/2) dump_state(fp, reg_data, dmem_data);
 	}
+
+	dump_state(fp, reg_data, dmem_data);
+	fclose(fp);
 
 	free(reg_data);
 	free(imem_data);
 	free(dmem_data);
 
-	return 1;
+	return 0;
 }

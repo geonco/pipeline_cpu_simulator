@@ -18,7 +18,7 @@
 #define DMEM_DEPTH 1024
 
 // configs
-#define CLK_NUM 45
+#define CLK_NUM 120
 
 // structures
 struct imem_input_t {
