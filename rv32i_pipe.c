@@ -206,11 +206,119 @@ int main (int argc, char *argv[]) {
         mem.mem_to_reg = ex.mem_to_reg;
 
 		// instruction decode stage
+		uint32_t opcode, rd, funct3, rs1, rs2, funct7, is_rtype, is_itype, lui, auipc, jal, jalr, mem_read, mem_write, mem_to_reg, is_branch, branch, reg_write, alu_src, alu_op, imm12, imm32, rs1_dout, rs2_dout, stall_by_load_use, flush_by_branch, flush;
 
+		opcode = id.inst & 0x7f;
+		rd = (id.inst >> 7)  & 0x1f;
+		funct3 = (id.inst >> 12) & 0x7;
+		rs1 = (id.inst >> 15) & 0x1f;
+		rs2 = (id.inst >> 20) & 0x1f;
+		funct7 = (id.inst >> 25) & 0x7f;
+
+		is_rtype = (opcode == 0x33);
+		is_itype = (opcode == 0x13);
+		lui = (opcode == 0x37);
+		auipc = (opcode == 0x17);
+		jal = (opcode == 0x6f);
+		jalr = (opcode == 0x67);
+		mem_read = (opcode == 0x03);
+		mem_write = (opcode == 0x23);
+		mem_to_reg = mem_read;
+
+		is_branch = (opcode == 0x63);
+		branch = 0;
+		branch |= (is_branch && funct3 == 0x0) << 0; // beq
+		branch |= (is_branch && funct3 == 0x1) << 1; // bne
+		branch |= (is_branch && funct3 == 0x4) << 2; // blt
+		branch |= (is_branch && funct3 == 0x5) << 3; // bge
+		branch |= (is_branch && funct3 == 0x6) << 4; // bltu
+		branch |= (is_branch && funct3 == 0x7) << 5; // bgeu
+
+		reg_write = is_rtype | is_itype | mem_read | lui | auipc | jal | jalr;
+		alu_src = mem_read | mem_write | is_itype | lui | auipc;
+		alu_op = ((is_rtype | is_itype) << 1) | (branch ? 1 : 0);
+
+		// immediate generator
+		if (mem_write)                                    	// S-type
+			imm12 = ((id.inst >> 25) << 5) | ((id.inst >> 7) & 0x1f);
+		else if (is_branch)                                 // B-type
+			imm12 = (((id.inst >> 31) & 1) << 11)
+				  | (((id.inst >> 7)  & 1) << 10)
+				  | (((id.inst >> 25) & 0x3f) << 4)
+				  | ((id.inst >> 8) & 0xf);
+		else                                                // I-type
+			imm12 = (id.inst >> 20) & 0xfff;
+
+		if (lui | auipc)                                    // U-type
+			imm32 = id.inst & 0xfffff000;
+		else if (jal)                                       // J-type
+			imm32 = ((uint32_t)((int32_t)id.inst >> 31) << 20)
+				  | (id.inst & 0xff000)
+				  | (((id.inst >> 20) & 1) << 11) 
+				  | (((id.inst >> 21) & 0x3ff) << 1);
+		else                                                // I/S/B
+			imm32 = (uint32_t)(((int32_t)(imm12 << 20)) >> 20);
+
+
+        rs1_dout = reg_data[rs1];
+        rs2_dout = reg_data[rs2];
+
+		// hazard detection
+		stall_by_load_use = ex.mem_read && ((ex.rd == rs1) || (ex.rd == rs2)) && (ex.rd != 0);
+		flush_by_branch = branch_taken | ex.jal | ex.jalr;
+		flush = stall_by_load_use | flush_by_branch;
+
+		if (flush) {
+			struct pipe_id_ex_t z = {0};
+			ex = z;
+		}
+		else {
+			ex.pc = id.pc;
+			ex.rs1_dout = rs1_dout;
+			ex.rs2_dout = rs2_dout;
+			ex.imm32 = imm32;
+			ex.funct3 = funct3;
+			ex.funct7 = funct7;
+			ex.branch = branch;
+			ex.alu_src = alu_src;
+			ex.alu_op = alu_op;
+			ex.mem_read = mem_read;
+			ex.mem_write = mem_write;
+			ex.rs1 = rs1;
+			ex.rs2 = rs2;
+			ex.rd = rd;
+			ex.reg_write = reg_write;
+			ex.mem_to_reg = mem_to_reg;
+			ex.lui = lui;
+			ex.auipc = auipc;
+			ex.jal = jal;
+			ex.jalr = jalr;
+		}
 
 		// instruction fetch stage
-
+		uint32_t pc_next_plus4, imem_addr, inst, pc_write, stall; 
 		
+		pc_write = ~stall_by_load_use & 1;
+		flush = flush_by_branch;
+		stall = stall_by_load_use;
+
+		pc_next_plus4 = pc_curr + 4;
+		pc_next = pc_next_sel ? pc_target : pc_next_plus4;
+
+		imem_addr = (pc_curr >> 2) & (IMEM_DEPTH - 1);
+		inst = imem_data[imem_addr];
+
+		if (flush) {
+			struct pipe_if_id_t z = {0};
+			id = z;
+		}
+		else if (!stall) {
+			id.pc = pc_curr;
+			id.inst = inst;
+		}
+
+		if (pc_write) pc_curr = pc_next;
+
 		cc++;
 	}
 
