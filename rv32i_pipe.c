@@ -85,24 +85,44 @@ int main (int argc, char *argv[]) {
 	while (cc < CLK_NUM) {
 
 		// write back stage
-		uint32_t rd_din;
+		uint32_t rd_din, wb_rd, wb_reg_write;
 		rd_din = wb.mem_to_reg ? wb.dmem_dout : wb.alu_result;
+		wb_rd = wb.rd;
+		wb_reg_write = wb.reg_write;
 		if (wb.reg_write && wb.rd != 0) reg_data[wb.rd] = rd_din;
 
 		// memory stage
-		uint32_t dmem_addr = (mem.alu_result >> 2) & (DMEM_DEPTH - 1);
-		uint32_t dmem_dout = dmem_data[dmem_addr];
+		uint32_t byte_addr, sz, nbytes, b, widx, boff, raw, load_ext;
 
-		if (mem.mem_write) dmem_data[dmem_addr] = mem.rs2_dout;
+		byte_addr = mem.alu_result;
+		sz = mem.funct3 & 0x3;	// 00=byte, 01=half, 10=word
+		nbytes = (sz == 0) ? 1 : (sz == 1) ? 2 : 4;
 
-		uint32_t load_ext;
+		// load
+		raw = 0;
+		for (b = 0; b < nbytes; b++) {
+			widx = ((byte_addr + b) >> 2) & (DMEM_DEPTH - 1);
+			boff = ((byte_addr + b) & 3) * 8;
+			raw |= ((dmem_data[widx] >> boff) & 0xff) << (b * 8);
+		}
+
+		// store
+		if (mem.mem_write) {
+			for (b = 0; b < nbytes; b++) {
+				widx = ((byte_addr + b) >> 2) & (DMEM_DEPTH - 1);
+				boff = ((byte_addr + b) & 3) * 8;
+				dmem_data[widx] = (dmem_data[widx] & ~(0xffu << boff))
+				                | (((mem.rs2_dout >> (b * 8)) & 0xff) << boff);
+			}
+		}
+
 		switch (mem.funct3)
 		{
-			case 0x0: load_ext = (int32_t)(int8_t)(dmem_dout & 0xff);   break;  // LB
-			case 0x1: load_ext = (int32_t)(int16_t)(dmem_dout & 0xffff); break; // LH
-			case 0x4: load_ext = dmem_dout & 0xff;    break;                    // LBU
-			case 0x5: load_ext = dmem_dout & 0xffff;  break;                    // LHU
-			default:  load_ext = dmem_dout;           break;                    // LW
+			case 0x0: load_ext = (int32_t)(int8_t)(raw & 0xff);    break;  // LB
+			case 0x1: load_ext = (int32_t)(int16_t)(raw & 0xffff); break; // LH
+			case 0x4: load_ext = raw & 0xff;    break;                    // LBU
+			case 0x5: load_ext = raw & 0xffff;  break;                    // LHU
+			default:  load_ext = raw;           break;                    // LW
 		}
 
 		wb.alu_result = mem.alu_result;
@@ -136,7 +156,7 @@ int main (int argc, char *argv[]) {
 		// forward_a (rs1)
         if (mem.reg_write && (mem.rd != 0) && (mem.rd == ex.rs1))
             forward_a = 0x2;
-        else if (wb.reg_write && (wb.rd != 0) && (wb.rd == ex.rs1))
+        else if (wb_reg_write && (wb_rd != 0) && (wb_rd == ex.rs1))
             forward_a = 0x1;
         else
             forward_a = 0x0;
@@ -144,7 +164,7 @@ int main (int argc, char *argv[]) {
         // forward_b (rs2)
         if (mem.reg_write && (mem.rd != 0) && (mem.rd == ex.rs2))
             forward_b = 0x2;
-        else if (wb.reg_write && (wb.rd != 0) && (wb.rd == ex.rs2))
+        else if (wb_reg_write && (wb_rd != 0) && (wb_rd == ex.rs2))
             forward_b = 0x1;
         else
             forward_b = 0x0;
